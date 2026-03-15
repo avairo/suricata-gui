@@ -1,0 +1,258 @@
+"use client"
+
+import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+import { Shield, AlertTriangle, AlertCircle, Globe, Clock, Volume2, VolumeX } from "lucide-react"
+import { MetricCard } from "./metric-card"
+import { StatusBadge } from "./status-badge"
+import { EventFilters } from "./event-filters"
+import { EventTable } from "./event-table"
+import { IpMap, GeoLocation } from "./ip-map"
+import { useSuricataWebSocket } from "@/hooks/use-suricata-websocket"
+import { playAlertSound } from "@/lib/audio"
+import type { FilterState, DashboardMetrics, SuricataEvent } from "@/lib/types"
+
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws"
+
+export function SocDashboard() {
+  const [audioEnabled, setAudioEnabled] = useState(false)
+
+  const handleNewEvent = useCallback((event: SuricataEvent) => {
+    if (audioEnabled && (event.severity === "critical" || event.severity === "high")) {
+      playAlertSound(event.severity)
+    }
+  }, [audioEnabled])
+
+  const { events, connected, error, clearEvents, reconnect } = useSuricataWebSocket(WS_URL, handleNewEvent)
+
+  const [filters, setFilters] = useState<FilterState>({
+    severity: "all",
+    eventType: "all",
+    srcIp: "",
+    destIp: "",
+    timeRange: "all",
+  })
+
+  // IP Geolocation Tracker State
+  const [geoLocations, setGeoLocations] = useState<GeoLocation[]>([])
+  // Keep track of resolved IPs to prevent spanning the API over and over for the same IP
+  const resolvedIps = useRef<Set<string>>(new Set())
+
+  // Process unique IPs for mapping every time events update
+  useEffect(() => {
+    // Collect up to 20 new unresolved IPs from recent events
+    const unresolvedIps = Array.from(new Set(events.map(e => e.srcIp)))
+      .filter(ip => !resolvedIps.current.has(ip) && ip !== "127.0.0.1" && ip !== "-" && !ip.startsWith("192.168") && !ip.startsWith("10."))
+      .slice(0, 20)
+
+    if (unresolvedIps.length === 0) return
+
+    // Immediately mark them as resolved so we don't try again right away
+    unresolvedIps.forEach(ip => resolvedIps.current.add(ip))
+
+    // Query ip-api for batch
+    fetch("http://ip-api.com/batch", {
+      method: "POST",
+      body: JSON.stringify(unresolvedIps)
+    })
+      .then(res => res.json())
+      .then(data => {
+        const newLocations: GeoLocation[] = data
+          .filter((res: any) => res.status === "success")
+          .map((res: any) => ({
+            ip: res.query,
+            lat: res.lat,
+            lon: res.lon
+          }))
+
+        if (newLocations.length > 0) {
+          setGeoLocations(prev => [...prev, ...newLocations])
+        }
+      })
+      .catch(err => console.error("Failed to fetch IP geo data:", err))
+  }, [events])
+
+  // Calculate metrics
+  const metrics: DashboardMetrics = useMemo(() => {
+    const uniqueIps = new Set(events.map((e) => e.srcIp))
+    return {
+      totalEvents: events.length,
+      highSeverity: events.filter(
+        (e) => e.severity === "critical" || e.severity === "high"
+      ).length,
+      mediumSeverity: events.filter((e) => e.severity === "medium").length,
+      uniqueSourceIps: uniqueIps.size,
+      lastEventTime: events[0]?.timestamp || null,
+    }
+  }, [events])
+
+  // Filter events
+  const filteredEvents = useMemo(() => {
+    return events.filter((event) => {
+      if (filters.severity !== "all" && event.severity !== filters.severity) {
+        return false
+      }
+      if (filters.eventType !== "all" && event.eventType !== filters.eventType) {
+        return false
+      }
+      if (filters.srcIp && !event.srcIp.includes(filters.srcIp)) {
+        return false
+      }
+      if (filters.destIp && !event.destIp.includes(filters.destIp)) {
+        return false
+      }
+      if (filters.timeRange !== "all") {
+        const eventTime = new Date(event.timestamp).getTime()
+        const now = Date.now()
+        const ranges: Record<string, number> = {
+          "1h": 3600000,
+          "6h": 21600000,
+          "24h": 86400000,
+          "7d": 604800000,
+        }
+        if (now - eventTime > ranges[filters.timeRange]) {
+          return false
+        }
+      }
+      return true
+    })
+  }, [events, filters])
+
+  // Filter map locations based on filtered events
+  const filteredGeoLocations = useMemo(() => {
+    const filteredIps = new Set(filteredEvents.map((e) => e.srcIp))
+    return geoLocations.filter((loc) => filteredIps.has(loc.ip))
+  }, [filteredEvents, geoLocations])
+
+  const formatLastEventTime = (timestamp: string | null): string => {
+    if (!timestamp) return "No events"
+    const date = new Date(timestamp)
+    return date.toLocaleTimeString("en-US", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="border-b border-border bg-card">
+        <div className="mx-auto max-w-[1600px] px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <img src="/icon.svg" alt="Sentinel Logo" className="h-10 w-10 dark:invert" />
+                <div>
+                  <h1 className="text-5xl text-foreground flex items-baseline">
+                    <img src="/sentinel-logo.png" alt="Sentinel Logo Text" className="h-[40px] dark:invert" />
+                  </h1>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setAudioEnabled(!audioEnabled)}
+                className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${audioEnabled
+                  ? "bg-primary/20 text-primary hover:bg-primary/30"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                title={audioEnabled ? "Disable Audio Alerts" : "Enable Audio Alerts"}
+              >
+                {audioEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                <span className="hidden sm:inline">
+                  {audioEnabled ? "Audio On" : "Audio Off"}
+                </span>
+              </button>
+              <StatusBadge connected={connected} backend="localhost:8000" />
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-[1600px] px-6 py-6 space-y-6">
+        {/* Connection Error Banner */}
+        {error && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-destructive">{error}</p>
+              <button
+                onClick={reconnect}
+                className="text-sm font-medium text-destructive hover:underline"
+              >
+                Retry Connection
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Metrics Cards */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <MetricCard
+            title="Total Events"
+            value={metrics.totalEvents}
+            icon={Shield}
+            variant="info"
+          />
+          <MetricCard
+            title="High / Critical"
+            value={metrics.highSeverity}
+            icon={AlertTriangle}
+            variant="critical"
+            subtitle="Requires attention"
+          />
+          <MetricCard
+            title="Medium Severity"
+            value={metrics.mediumSeverity}
+            icon={AlertCircle}
+            variant="medium"
+          />
+          <MetricCard
+            title="Unique Sources"
+            value={metrics.uniqueSourceIps}
+            icon={Globe}
+            variant="default"
+          />
+          <MetricCard
+            title="Last Event"
+            value={formatLastEventTime(metrics.lastEventTime)}
+            icon={Clock}
+            variant="default"
+          />
+        </div>
+
+        {/* Filters Section */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <EventFilters
+            filters={filters}
+            onFilterChange={setFilters}
+            onClearLogs={clearEvents}
+          />
+        </div>
+
+        {/* IP Geolocation Map */}
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-foreground">
+            Threat Origin Map
+          </h2>
+          <IpMap locations={filteredGeoLocations} />
+        </div>
+
+        {/* Live Event Feed */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-foreground">
+              Live Event Feed
+            </h2>
+            <span className="text-sm text-muted-foreground">
+              Showing {filteredEvents.length} of {events.length} events
+            </span>
+          </div>
+          <div className="max-h-[600px] overflow-y-auto rounded-lg">
+            <EventTable events={filteredEvents} />
+          </div>
+        </div>
+      </main>
+    </div>
+  )
+}
