@@ -6,7 +6,7 @@
 
 (function () {
   // --- CONFIGURATION ---
-  const API_KEY = 'AIzaSyCjL2ueSVcCf9LJ3j_I92idtzkhY0-EtNA'; // Replace with your actual Gemini API Key
+  const API_KEY = ''; 
   const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
   const SYSTEM_INSTRUCTION = "You are a cybersecurity AI assistant integrated into a Suricata Intrusion Detection System dashboard. You explain alerts, classify severity, suggest mitigation steps, and help security analysts understand threats. You never provide hacking instructions.";
 
