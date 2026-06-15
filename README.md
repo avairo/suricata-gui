@@ -3,6 +3,7 @@
 A modern, high-performance, real-time Security Operations Center (SOC) dashboard designed for **Suricata Network Security Monitoring**. This application tails Suricata's standard Unified Alert and Log file (`eve.json`) and streams live network security events to a user interface over WebSockets.
 
 ---
+![Alt Text](https://github.com/avairo/suricata-gui/blob/d38d7fd170f4a2835479ebab99af50f2f77a727e/screenshot.png)
 
 ## 🌟 Key Features
 
